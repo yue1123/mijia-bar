@@ -4,6 +4,8 @@
 <dict>
 	<key>CFBundleExecutable</key>
 	<string>MijiaBar</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>me.dh.mijia-bar</string>
 	<key>CFBundleName</key>

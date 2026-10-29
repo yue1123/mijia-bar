@@ -10,9 +10,10 @@ cd "$(dirname "$0")"
 swift build -c release
 app=build/MijiaBar.app
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp .build/release/MijiaBar "$app/Contents/MacOS/"
 cp Resources/Info.plist "$app/Contents/"
+cp Resources/AppIcon.icns "$app/Contents/Resources/"  # 由 Resources/make-icon.swift 生成
 identity=$(security find-identity -v -p codesigning | awk '/Apple Development/ { print $2; exit }')
 codesign --force --sign "${identity:--}" "$app"
 echo "$app"
