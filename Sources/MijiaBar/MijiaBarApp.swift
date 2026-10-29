@@ -89,6 +89,8 @@ func bulbIcon(on: Bool, size: CGFloat) -> NSImage {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = DeviceStore()
     private var monitor: PowerMonitor?
+    private var reminder: NightReminder?
+    private var nightTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -99,6 +101,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         // 面板是点开才创建的，它的 .task 刷新不到；菜单栏图标一启动就要知道灯亮没亮
         Task { await store.refresh() }
+        Task { await store.handleLaunch() }
+
+        let reminder = NightReminder(store: store)
+        self.reminder = reminder
+        store.onNightfall = { reminder.remind($0) }
+        if store.devices.contains(where: \.onAtNight) { NightReminder.requestAuthorization() }
+        // 先跑一次记下现在是不是天黑，之后每分钟看一眼有没有刚天黑
+        Task { await store.checkNightfall() }
+        nightTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+            Task { @MainActor in await store.checkNightfall() }
+        }
+        nightTimer?.tolerance = 10
     }
 }
 
@@ -245,7 +259,7 @@ private struct DeviceTile: View {
             .background(background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .shadow(color: .black.opacity(isOn ? 0.15 : 0), radius: 3, y: 1)
             .overlay(alignment: .topTrailing) {
-                if device.offOnSleep || device.onOnWake {
+                if device.offOnSleep || device.onOnWake || device.onAtNight {
                     Image(systemName: device.trigger.symbol)
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(isOn ? Color.black.opacity(0.3) : Color.secondary.opacity(0.6))
@@ -336,7 +350,8 @@ extension Device {
 
     /// 「锁屏时关闭，解锁时恢复」；没开自动化是空串。
     var automationSummary: String {
-        [offOnSleep ? "\(trigger.offEvent)时关闭" : nil, onOnWake ? "\(trigger.onEvent)时恢复" : nil]
+        [offOnSleep ? "\(trigger.offEvent)时关闭" : nil, onOnWake ? "\(trigger.onEvent)时恢复" : nil,
+         onAtNight ? "天黑后\(trigger.onEvent)时开灯" : nil]
             .compactMap { $0 }.joined(separator: "，")
     }
 }

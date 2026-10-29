@@ -1,6 +1,6 @@
 # MijiaBar
 
-菜单栏里控制米家 Wi-Fi 设备：手动开关，电脑睡眠 / 息屏时自动关、唤醒 / 亮屏时自动开。控制走局域网 miio 协议，不经过小米云。
+菜单栏里控制米家 Wi-Fi 设备：手动开关，电脑睡眠 / 息屏时自动关、唤醒 / 亮屏时自动开，天黑后打开电脑自动开灯、天黑时提醒开灯。控制走局域网 miio 协议，不经过小米云。
 
 ## 构建
 
@@ -32,5 +32,7 @@ swift run miio <ip> <token> set 2 1 on
 - 睡眠：IOKit 的 `kIOMessageSystemWillSleep`，命令发完才放行（系统最多等 30 秒）。
   唤醒：`NSWorkspace.didWakeNotification`，失败每 2 秒重试，最多 15 次。
   息屏 / 亮屏：`screensDidSleepNotification` / `screensDidWakeNotification`，按设备选触发时机。
+- 夜间：按本机时间设天黑 / 天亮（默认 18:00–07:00）。天黑后唤醒 / 亮屏 / 解锁（按触发时机）或开机（需打开「登录时启动」，开机 10 分钟内）时直接开灯，白天不开；
+  到天黑那一刻电脑在用（没息屏、没锁屏）、灯关着，发系统通知，点通知开灯。每分钟检查一次，中间睡过就不提醒，交给唤醒处理。
 - 日志：`log stream --predicate 'subsystem == "me.dh.mijia-bar"'`
 - 有 Apple Development 证书时用它签名，钥匙串的「始终允许」重新构建后仍然有效；没有证书退回 ad-hoc，每次重新构建都要重新授权。

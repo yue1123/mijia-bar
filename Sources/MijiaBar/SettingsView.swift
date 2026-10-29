@@ -234,6 +234,21 @@ private struct DeviceEditor: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            Section {
+                Toggle("天黑后\(device.trigger.onEvent)、开机时开灯", isOn: $device.onAtNight)
+                    .onChange(of: device.onAtNight) { _, on in if on { NightReminder.requestAuthorization() } }
+                if device.onAtNight {
+                    DatePicker("天黑", selection: time(\.nightStart), displayedComponents: .hourAndMinute)
+                    DatePicker("天亮", selection: time(\.nightEnd), displayedComponents: .hourAndMinute)
+                }
+            } header: {
+                Text("夜间")
+            } footer: {
+                Text("按本机时间算。之前开没开都会打开；白天\(device.trigger.onEvent)不开。到了天黑的时间电脑还在用、灯还关着，发通知提醒开灯。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             Section("连接") {
                 TextField("IP", text: $device.host, prompt: Text("192.168.1.50"))
                 SecureField("token", text: $token, prompt: Text("32 位十六进制"))
@@ -261,6 +276,17 @@ private struct DeviceEditor: View {
         } message: {
             Text("钥匙串里的 token 也会一起删掉。之后可以重新扫码导入。")
         }
+    }
+
+    /// 设备里存的是一天中的第几分钟，DatePicker 要 Date，只取时分
+    private func time(_ keyPath: WritableKeyPath<Device, Int>) -> Binding<Date> {
+        Binding(
+            get: { Calendar.current.date(bySettingHour: device[keyPath: keyPath] / 60, minute: device[keyPath: keyPath] % 60, second: 0, of: .now)! },
+            set: {
+                let c = Calendar.current.dateComponents([.hour, .minute], from: $0)
+                device[keyPath: keyPath] = c.hour! * 60 + c.minute!
+            }
+        )
     }
 
     private var statusColor: Color {

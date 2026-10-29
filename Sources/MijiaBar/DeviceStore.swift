@@ -14,6 +14,11 @@ struct Device: Codable, Identifiable, Hashable {
     var offOnSleep = false
     var onOnWake = false
     var trigger = Trigger.sleep
+    /// 天黑以后开机、恢复时直接开灯（不管之前开没开）；天黑那一刻电脑正在用就发通知提醒
+    var onAtNight = false
+    /// 一天里的第几分钟，开始晚于结束表示跨午夜
+    var nightStart = 18 * 60
+    var nightEnd = 7 * 60
     /// 导入时才有，用来认出同一台设备、再导入时只更新 IP 和 token
     var did: String?
     var model: String?
@@ -48,8 +53,18 @@ extension Device {
         offOnSleep = try c.decodeIfPresent(Bool.self, forKey: .offOnSleep) ?? d.offOnSleep
         onOnWake = try c.decodeIfPresent(Bool.self, forKey: .onOnWake) ?? d.onOnWake
         trigger = try c.decodeIfPresent(Trigger.self, forKey: .trigger) ?? d.trigger
+        onAtNight = try c.decodeIfPresent(Bool.self, forKey: .onAtNight) ?? d.onAtNight
+        nightStart = try c.decodeIfPresent(Int.self, forKey: .nightStart) ?? d.nightStart
+        nightEnd = try c.decodeIfPresent(Int.self, forKey: .nightEnd) ?? d.nightEnd
         did = try c.decodeIfPresent(String.self, forKey: .did)
         model = try c.decodeIfPresent(String.self, forKey: .model)
+    }
+
+    /// 按本机时区的钟点算。
+    func isNight(at date: Date = .now) -> Bool {
+        let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+        let minute = c.hour! * 60 + c.minute!
+        return nightStart <= nightEnd ? (nightStart..<nightEnd).contains(minute) : minute >= nightStart || minute < nightEnd
     }
 }
 
@@ -215,6 +230,11 @@ final class DeviceStore: ObservableObject {
     }
 
     func handle(_ event: Trigger, on: Bool) async {
+        switch event {
+        case .display: screenOff = !on
+        case .lock: locked = !on
+        case .sleep: if on { screenOff = false }
+        }
         if on {
             await restore(on: event)
         } else {
@@ -223,6 +243,7 @@ final class DeviceStore: ObservableObject {
     }
 
     private func turnOff(on event: Trigger, attempts: Int) async {
+        pendingNight.formUnion(devices.filter { $0.onAtNight && $0.trigger.turnsOff(on: event) }.map(\.id))
         let targets = devices.filter { $0.offOnSleep && $0.trigger.turnsOff(on: event) }
         guard !targets.isEmpty else { return }
         // 先看现在开没开；读不到就按最后一次知道的状态算
@@ -239,12 +260,59 @@ final class DeviceStore: ObservableObject {
     }
 
     /// 刚唤醒时网络往往还没连上，多重试几次。先从待恢复里摘掉，唤醒和亮屏前后脚到时不会开两遍。
+    /// 天黑时，之前跟着关过一轮的设备不管原来开没开都打开；白天只恢复原来开着的。
     private func restore(on event: Trigger) async {
-        let targets = devices.filter { $0.onOnWake && $0.trigger.restores(on: event) && toRestore.contains($0.id) }
+        let woke = devices.filter { $0.trigger.restores(on: event) }
+        let targets = woke.filter {
+            ($0.onOnWake && toRestore.contains($0.id)) || ($0.onAtNight && pendingNight.contains($0.id) && $0.isNight())
+        }
+        pendingNight.subtract(woke.map(\.id))
         guard !targets.isEmpty else { return }
         toRestore.subtract(targets.map(\.id))
         let done = await apply(true, to: targets, attempts: 15)
         record(event.onEvent, summary("打开", done: done, total: targets.count))
+    }
+
+    /// 登录时启动的话，开机后 App 也跟着起来：天黑就开灯。手动重开 App 不算，所以看开机多久了。
+    func handleLaunch() async {
+        guard ProcessInfo.processInfo.systemUptime < 600 else { return }
+        let targets = devices.filter { $0.onAtNight && $0.isNight() }
+        guard !targets.isEmpty else { return }
+        let done = await apply(true, to: targets, attempts: 15)
+        record("开机", summary("打开", done: done, total: targets.count))
+    }
+
+    // MARK: 天黑提醒
+
+    /// 关过一轮、等着下次恢复时判断要不要开灯的设备
+    private var pendingNight: Set<Device.ID> = []
+    private var screenOff = false
+    private var locked = false
+    private var wasNight: [Device.ID: Bool] = [:]
+    private var lastCheck = Date.now
+    /// 天黑时还关着的设备交给它发通知
+    var onNightfall: (([Device]) -> Void)?
+
+    /// 每分钟跑一次。只在「白天 → 天黑」那一刻提醒，并且电脑正在用（没息屏、没锁屏）、灯还关着。
+    /// 两次间隔太长说明中间睡过，天黑后的唤醒交给 `restore` 处理，这里只更新状态。
+    func checkNightfall() async {
+        let now = Date.now
+        let resumed = now.timeIntervalSince(lastCheck) > 120
+        lastCheck = now
+        var fallen: [Device] = []
+        for device in devices where device.onAtNight {
+            let night = device.isNight(at: now)
+            if night, wasNight[device.id] == false { fallen.append(device) }
+            wasNight[device.id] = night
+        }
+        guard !fallen.isEmpty, !resumed, !screenOff, !locked else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for device in fallen { group.addTask { await self.refresh(device) } }
+        }
+        let off = fallen.filter { states[$0.id] == .off }
+        guard !off.isEmpty else { return }
+        record("天黑", "提醒开\(off.map(\.name).joined(separator: "、"))")
+        onNightfall?(off)
     }
 
     /// 各设备并发，失败每 2 秒重试，最多 `attempts` 次。返回成功的设备名。
